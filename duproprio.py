@@ -4,17 +4,31 @@
 Usage:
   duproprio  [options]
   duproprio dev  [options]
+  duproprio indexes [options]
+  duproprio details [options]
+  duproprio assess [options]
 
 Options:
   -h --help      Show this screen.
   -f --force-update    Overwrite/recalculate database tables and outputs
-  -i --index-path      Folder containing index pages
-  -d --details-path      Folder containing details pages
+  -i --index-path=<indexpath>      Folder containing index pages
+  -d --details-path=<detailspath>      Folder containing details pages
 
-This just uses a manual search of recent solds, or other list, to get locations for sold properties
+duproprio indexes : Start from index files in a given folder
+duproprio details :  Start from details files in a given folder
+duproprio assess  : Assess (estimate) value of a given URL or duproprio ID.
+
+
+This just uses a manual search of recent solds, or other list, to get locations for sold properties.
+That is, there is no scraping involved.
+However, if you create your own search and download the index files corresponding to your search, this helps to analyse the data from the listed units.
+
+to do:
+ - get latex stata working.
+ - then evaluate units.
 
 """
-
+import docopt
 import glob,os,re
 import numpy as np
 import urllib2
@@ -22,7 +36,9 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import pandas as pd
 from cpblUtilities.pandas_utils import str2df
-from cpblUtilities import doSystemLatex
+from cpblUtilities import defaults, doSystemLatex
+paths=defaults['paths']
+paths['batch'] ='./'
 
 def LaTeX_draw_rooms(xys=None):
     if xys is None:
@@ -61,9 +77,11 @@ Walk-In Closet	2.13	1.35""")
 
 
 
-def use_index_pages_to_get_sold_property_pages(named_manual_search='sold-manual'):
+def use_index_pages_to_get_sold_property_pages(indexpath=None):
+    if indexpath is None:
+        indexpath = paths['indexhtml'] #named_manual_search='sold-manual'):
     urls,             salefeatures =[],[]
-    for file in glob.glob(named_manual_search+'/'+"*.html"):
+    for file in glob.glob(indexpath+'/'+"*.html"):
         html = open(file,'rt').read()
         urls += re.findall("""<a href="(.*?)" class="gtm-search-results-link-property search-results-listings-list__item-image-link" property="significantLink">""",html)
         # Sold dates only available in this index page?
@@ -83,7 +101,9 @@ def use_index_pages_to_get_sold_property_pages(named_manual_search='sold-manual'
                                   uid = uid,)]
     dfsf = pd.DataFrame(salefeatures).set_index('uid', drop=False)
 
-    ud =named_manual_search+'/units/'
+    assert paths.get('detailshtml',None) in [ None, paths['indexhtml']+'units/']
+    paths['detailshtml'] = paths['indexhtml']+'units/'
+    ud = paths['detailshtml']
     os.system('mkdir -p '+ ud)
     #os.chdir('units')
     for url in urls:
@@ -108,10 +128,10 @@ def use_index_pages_to_get_sold_property_pages(named_manual_search='sold-manual'
         yield ds,html
 
 
-def extract_data_from_sold_property_pages():
+def extract_data_from_sold_property_pages_from_indexes(indexpath= None):
     features=[]
     roomfeatures=[]
-    for prec,html in use_index_pages_to_get_sold_property_pages():
+    for prec,html in use_index_pages_to_get_sold_property_pages(indexpath):
         # Redundant:
         #latlon = re.findall("""{"latitude":(.*?),"longitude":(.*?),""", html)
         roomdirs = re.findall("""listing-rooms-details__table__item--room">\n *([^\n]*).*?listing-rooms-details__table__item--dimensions__content"> *\n *([^\n]*)""",html, re.DOTALL)
@@ -139,6 +159,38 @@ def extract_data_from_sold_property_pages():
 
     return features, roomfeatures
 
+def extract_data_from_duproprio_detailed_property_html(html)
+    features=[]
+    roomfeatures=[]
+    if 1:
+        # Redundant:
+        #latlon = re.findall("""{"latitude":(.*?),"longitude":(.*?),""", html)
+        roomdirs = re.findall("""listing-rooms-details__table__item--room">\n *([^\n]*).*?listing-rooms-details__table__item--dimensions__content"> *\n *([^\n]*)""",html, re.DOTALL)
+
+        lchars = re.findall("""listing-list-characteristics__row listing-list-characteristics__row--label">(.*?)</div>.*?listing-list-characteristics__row listing-list-characteristics__row--value">(.*?)</div>""", html, re.DOTALL)
+
+        # These come in different flavours; so use two steps
+        mainchars_ = re.findall("""<div class="listing-main-characteristics__(?:label|item-dimensions)">(.*?)</div>""", html, re.DOTALL)
+        mainchars = []
+        for mm in mainchars_:
+            title = re.findall("""<span class="listing-main-characteristics__title.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
+            value = re.findall("""<span class="listing-main-characteristics__number.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
+            mainchars+= [[title,value] ]
+
+        listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""", html, re.DOTALL)[0].replace(',','')
+        
+        features += [ pd.Series(dict(lchars+mainchars+[['listprice',listprice]]) ) ]
+
+        for rd in roomdirs:
+            roomfeatures += [dict([
+                ['room', rd[0]],
+                ['dim', rd[1]],
+                ['uid', prec['uid']],
+            ])]
+
+    return features, roomfeatures
+
+
 def area_from_duproprio_dimensions(aline):
     if pd.isnull(aline):# in [np.nan]:
         return np.nan
@@ -148,17 +200,28 @@ def area_from_duproprio_dimensions(aline):
         return x,y,x*y # m, m, metres squared
     if 'm²' in aline:
         return float(re.findall('([0123456789.]*) m²', aline)[0])  # metres squared
-    ohoh
+    raise(Error('Cannot recognize dimensions format'))
+
+
+def process_folder_of_details_pages(detailspath=None):
+    if detailspath is None:
+        detailspath = paths['detailshtml']
+    urls, salefeatures =[],[]
+    for file in glob.glob(detailspath+'/'+"*.html"):
+        html = open(file,'rt').read()
+        urls += re.findall("""<a href="(.*?)" class="gtm-search-results-link-property search-results-listings-list__item-image-link" property="significantLink">""",html)
+        # Sold dates only available in this index page?
+        items = re.findall("""<li id="listing-([0123456789]*)" class="search-results-listings-list__item(.*?)search-results-listings-list__item-footer""", html, re.DOTALL)
 
 
 def prep_data(forceUpdate=False):
     storedata = 'tmpsoldd.pandas'
-    if os.path.exists(storedata) and not forceUpdate:
+    if os.path.exists(storedata) and not forceUpdate and not defaults['forceUpdate']:
         return pd.read_pickle(storedata), pd.read_pickle('all'+storedata)
-    if 1: #not os.path.exists('soldprops.pandas') or forceUpdate:
-        ff,rf =extract_data_from_sold_property_pages()
-        pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
-        pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
+
+    ff,rf =extract_data_from_sold_property_pages_from_indexes()
+    pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
+    pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
 
     df= pd.read_pickle('soldprops.pandas').set_index('uid')
     rdf= pd.read_pickle('soldpropsrooms.pandas')
@@ -221,7 +284,10 @@ def prep_data(forceUpdate=False):
               'firstfloor','secondfloor', 'thirdfloor',
               'undivided', 'latitude', 'longitude',
     ]].sort_values('distance')
+    dfk['latitude'] = dfk['latitude'].astype(float)
+    dfk['longitude'] = dfk['longitude'].astype(float)
     dfk['ppsqft'] = dfk.listprice/(dfk.livingSpace* 3.28084*3.28084)
+    dfk['ppsqft_r'] = dfk.listprice/(dfk.indoorArea* 3.28084*3.28084)
 
     dfk.to_pickle(storedata)
     df.to_pickle('all'+storedata)
@@ -237,53 +303,69 @@ def prep_data(forceUpdate=False):
 defaults={}
 if __name__ == '__main__':
     # Docopt is a library for parsing command line arguments
-    try:
+    if 1:#try:
         # Parse arguments, use file docstring as a parameter definition
         arguments = docopt.docopt(__doc__)
         knownmodes = [aa for aa in arguments if not aa.startswith('-')]
         #if arguments['--serial']:
         #        defaults['server']['parallel']=False
+        if arguments['--index-path']:
+                paths['indexhtml']= arguments['--index-path']
+        if arguments['--details-path']:
+                paths['detailshtml']= arguments['--details-path']
         defaults['forceUpdate'] = arguments['--force-update'] == True
         runmode=''.join([ss*arguments[ss] for ss in knownmodes])
         runmode= None if not runmode else runmode
     # Handle invalid options
-    except docopt.DocoptExit as e:
+    else:#except docopt.DocoptExit as e:
         print e.message
 
 
 
-    if runmode is None: 
+    if runmode in ['indexes']: # None: 
         dfk,df = prep_data(False)
 
         dfku = dfk[dfk.divided=="Undivided"]
         dfkd = dfk[dfk.divided=="Divided"]
 
 
-        dfk.to_stata('tmp.dta')
+        dfk.to_stata(paths['batch']+'allunits.dta')
         # Analysis
 
         # Difference in prices based only on area?
         fig,ax = plt.subplots(1)
         for dd in ['Divided','Undivided']:
             yy = dfk.query('divided=="{}"'.format(dd))
-            plt.semilogx(yy.listprice, yy.indoorArea, '.', label=dd)
+            plt.plot(yy.listprice/1000, yy.indoorArea, '.', label=dd)
+        ax.set_xlabel(r'Asking price (k\$)')
+        ax.set_ylabel('Indoor area (m$^2$, sum over rooms)')
         plt.legend()
         plt.savefig('price-div.pdf')
 
         # sum of area matchs living space?
-        ax = dfk[['indoorArea','livingSpace']].plot.scatter('indoorArea','livingSpace')
+        fig,axs = plt.subplots(2)
+        ax=axs[0]
+        dfk[['indoorArea','livingSpace']].plot.scatter('indoorArea','livingSpace', ax=ax)
         ax.plot(ax.get_xlim(), ax.get_xlim(), 'k', zorder =-10)
-        ax.set_xlabel('Indoor area')
-        ax.set_ylabel('Living space')
+        ax.set_xlabel('Indoor area (m$^2$)')
+        ax.set_ylabel('Living space (m$^2$)')
+        ax=axs[1]
+        (dfk.livingSpace/dfk.indoorArea).hist(bins=100, ax=ax)
+        ax.set_xlim([0,2])
+        ax.set_xlabel('Ratio of habitable area / sum(indoor room areas)')
         plt.savefig('area-agreement.pdf')
 
-
-        fig,ax = plt.subplots(1)
+        fig,axs = plt.subplots(2)
         #plt.style.use('seaborn-deep')
         bins = np.linspace(200, 800, 31)
+        ax=axs[0]
         ax.hist([dfku.ppsqft, dfkd.ppsqft], bins, label=['Undivided', 'Divided'])
         ax.legend(loc='upper right')
-        ax.set_xlabel('Price/square-foot')
+        ax.set_xlabel('Price/square-foot (habitable area)')
+        ax=axs[1]
+        ax.hist([dfku.ppsqft_r, dfkd.ppsqft_r], bins, label=['Undivided', 'Divided'])
+        ax.legend(loc='upper right')
+        ax.set_xlabel('Price/square-foot (indoor rooms)')
         plt.savefig('ppsqft-div.pdf')
 
         plt.show()
@@ -293,10 +375,10 @@ if __name__ == '__main__':
         #ax.legend()
 
 
-
+        
 
 
         dodoo
         foiu
     elif runmode in ['dev']:
-        
+        foo
