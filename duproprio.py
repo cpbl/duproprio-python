@@ -6,7 +6,10 @@ Usage:
   duproprio dev  [options]
   duproprio indexes [options]
   duproprio details [options]
-  duproprio assess [options]
+  duproprio assess [option]
+  duproprio prep [options]
+  duproprio plot [options]
+  duproprio stata [options]
 
 Options:
   -h --help      Show this screen.
@@ -17,7 +20,7 @@ Options:
 duproprio indexes : Start from index files in a given folder
 duproprio details :  Start from details files in a given folder
 duproprio assess  : Assess (estimate) value of a given URL or duproprio ID.
-
+duproprio prep    : Get all data; concatenate it...
 
 This just uses a manual search of recent solds, or other list, to get locations for sold properties.
 That is, there is no scraping involved.
@@ -39,6 +42,7 @@ from cpblUtilities.pandas_utils import str2df
 from cpblUtilities import defaults, doSystemLatex
 paths=defaults['paths']
 paths['batch'] ='./'
+import pystata as pst
 
 def LaTeX_draw_rooms(xys=None):
     if xys is None:
@@ -101,9 +105,10 @@ def use_index_pages_to_get_sold_property_pages(indexpath=None):
                                   uid = uid,)]
     dfsf = pd.DataFrame(salefeatures).set_index('uid', drop=False)
 
-    assert paths.get('detailshtml',None) in [ None, paths['indexhtml']+'units/']
-    paths['detailshtml'] = paths['indexhtml']+'units/'
-    ud = paths['detailshtml']
+    ud = indexpath+'/units/'
+    #assert paths.get('detailshtml',None) in [ None, paths['indexhtml']+'/units/']
+    #paths['detailshtml'] = paths['indexhtml']+'/units/'
+    #ud = paths['detailshtml']
     os.system('mkdir -p '+ ud)
     #os.chdir('units')
     for url in urls:
@@ -128,67 +133,80 @@ def use_index_pages_to_get_sold_property_pages(indexpath=None):
         yield ds,html
 
 
-def extract_data_from_sold_property_pages_from_indexes(indexpath= None):
+def extract_data_from_sold_property_pages_from_indexes(indexpath= None, forceUpdate=False):
+    """
+    Return list of features and list of rooms from all properties listed in all index pages in a given folder.
+    """
+    if indexpath is None:
+        indexpath = paths['indexhtml'] #named_manual_search='sold-manual'):
+    storedata = indexpath+'all_records.pandas'
+    storedatarooms = indexpath+'all_records_rooms.pandas'
+    if os.path.exists(storedata) and not forceUpdate and not defaults['forceUpdate']:
+        return pd.read_pickle(storedata), pd.read_pickle(storedatarooms)
+    
     features=[]
     roomfeatures=[]
     for prec,html in use_index_pages_to_get_sold_property_pages(indexpath):
-        # Redundant:
-        #latlon = re.findall("""{"latitude":(.*?),"longitude":(.*?),""", html)
-        roomdirs = re.findall("""listing-rooms-details__table__item--room">\n *([^\n]*).*?listing-rooms-details__table__item--dimensions__content"> *\n *([^\n]*)""",html, re.DOTALL)
-
-        lchars = re.findall("""listing-list-characteristics__row listing-list-characteristics__row--label">(.*?)</div>.*?listing-list-characteristics__row listing-list-characteristics__row--value">(.*?)</div>""", html, re.DOTALL)
-
-        # These come in different flavours; so use two steps
-        mainchars_ = re.findall("""<div class="listing-main-characteristics__(?:label|item-dimensions)">(.*?)</div>""", html, re.DOTALL)
-        mainchars = []
-        for mm in mainchars_:
-            title = re.findall("""<span class="listing-main-characteristics__title.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
-            value = re.findall("""<span class="listing-main-characteristics__number.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
-            mainchars+= [[title,value] ]
-
-        listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""", html, re.DOTALL)[0].replace(',','')
+        feat, rfeat = extract_data_from_duproprio_detailed_property_html(html)
         
-        features += [prec.combine_first(  pd.Series(dict(lchars+mainchars+[['listprice',listprice]])) ) ]
-
-        for rd in roomdirs:
-            roomfeatures += [dict([
-                ['room', rd[0]],
-                ['dim', rd[1]],
-                ['uid', prec['uid']],
-            ])]
-
-    return features, roomfeatures
-
-def extract_data_from_duproprio_detailed_property_html(html)
-    features=[]
-    roomfeatures=[]
-    if 1:
-        # Redundant:
-        #latlon = re.findall("""{"latitude":(.*?),"longitude":(.*?),""", html)
-        roomdirs = re.findall("""listing-rooms-details__table__item--room">\n *([^\n]*).*?listing-rooms-details__table__item--dimensions__content"> *\n *([^\n]*)""",html, re.DOTALL)
-
-        lchars = re.findall("""listing-list-characteristics__row listing-list-characteristics__row--label">(.*?)</div>.*?listing-list-characteristics__row listing-list-characteristics__row--value">(.*?)</div>""", html, re.DOTALL)
-
-        # These come in different flavours; so use two steps
-        mainchars_ = re.findall("""<div class="listing-main-characteristics__(?:label|item-dimensions)">(.*?)</div>""", html, re.DOTALL)
-        mainchars = []
-        for mm in mainchars_:
-            title = re.findall("""<span class="listing-main-characteristics__title.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
-            value = re.findall("""<span class="listing-main-characteristics__number.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
-            mainchars+= [[title,value] ]
-
-        listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""", html, re.DOTALL)[0].replace(',','')
+        rf = pd.DataFrame(rfeat)
+        rf['uid']= prec['uid']
+        roomfeatures+=[rf]
         
-        features += [ pd.Series(dict(lchars+mainchars+[['listprice',listprice]]) ) ]
+        features += [prec.combine_first( feat )]
 
-        for rd in roomdirs:
-            roomfeatures += [dict([
-                ['room', rd[0]],
-                ['dim', rd[1]],
-                ['uid', prec['uid']],
-            ])]
+    rff =   pd.concat(roomfeatures)
+    rff.to_pickle(storedatarooms)
+    bff =   pd.DataFrame(features)
+    bff.to_pickle(storedata)
+    return bff, rff
 
-    return features, roomfeatures
+    sowowo # maybe rewrite this concat to just dataframe a list of series.
+    #then save it.
+    ###ff,rf =extract_data_from_sold_property_pages_from_indexes()
+    pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
+    pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
+        
+    return features, pd.concat(roomfeatures)
+
+
+    storedata = 'tmpsoldd.pandas'
+
+
+
+def extract_data_from_duproprio_detailed_property_html(html):
+
+    roomdirs = re.findall("""listing-rooms-details__table__item--room">\n *([^\n]*).*?listing-rooms-details__table__item--dimensions__content"> *\n *([^\n]*)""",html, re.DOTALL)
+
+    lchars = re.findall("""listing-list-characteristics__row listing-list-characteristics__row--label">(.*?)</div>.*?listing-list-characteristics__row listing-list-characteristics__row--value">(.*?)</div>""", html, re.DOTALL)
+
+    # These come in different flavours; so use two steps
+    mainchars_ = re.findall("""<div class="listing-main-characteristics__(?:label|item-dimensions)">(.*?)</div>""", html, re.DOTALL)
+    mainchars = []
+    for mm in mainchars_:
+        title = re.findall("""<span class="listing-main-characteristics__title.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
+        value = re.findall("""<span class="listing-main-characteristics__number.*?>(.*?)</span>""", mm, re.DOTALL)[0].strip()
+        mainchars+= [[title,value] ]
+
+    # Redundant?
+    latlon = re.findall("""{"latitude":(.*?),"longitude":(.*?),""", html)
+    if latlon:
+        mainchars+= [['latitude',float(latlon[0][0])], ['longitude',float(latlon[0][1])]]
+
+    listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""", html, re.DOTALL)
+    listprice = np.nan if not listprice else float(listprice[0].replace(',',''))
+
+    features1 =  pd.Series(dict(lchars+mainchars+[['listprice',listprice]]) ) 
+
+    roomfeatures1=[]
+    for rd in roomdirs:
+        roomfeatures1 += [dict([
+            ['room', rd[0]],
+            ['dim', rd[1]],
+            #['uid', prec['uid']],
+        ])]
+
+    return features1, roomfeatures1
 
 
 def area_from_duproprio_dimensions(aline):
@@ -206,26 +224,31 @@ def area_from_duproprio_dimensions(aline):
 def process_folder_of_details_pages(detailspath=None):
     if detailspath is None:
         detailspath = paths['detailshtml']
-    urls, salefeatures =[],[]
+    features, roomfeatures =[],[]
     for file in glob.glob(detailspath+'/'+"*.html"):
         html = open(file,'rt').read()
-        urls += re.findall("""<a href="(.*?)" class="gtm-search-results-link-property search-results-listings-list__item-image-link" property="significantLink">""",html)
-        # Sold dates only available in this index page?
-        items = re.findall("""<li id="listing-([0123456789]*)" class="search-results-listings-list__item(.*?)search-results-listings-list__item-footer""", html, re.DOTALL)
+        url = re.findall("""<meta property="og:url" content="(.*?)">""",html)[0]
+        uid = url.split('-')[-1]
+        settargeting_etc = re.findall(""".setTargeting.'(.*?)','(.*?)'""", html) +    re.findall("""<meta property="(.*?)" content="(.*?)".""", html) 
+        
+        feat, rfeat = extract_data_from_duproprio_detailed_property_html(html)
 
+        rf = pd.DataFrame(rfeat)
+        rf['uid']= uid
+        roomfeatures+=[pd.DataFrame(rf)]
+        
+        feat['uid'] =  uid
+        features += [ feat.combine_first(pd.Series(dict(settargeting_etc))) ]
 
-def prep_data(forceUpdate=False):
-    storedata = 'tmpsoldd.pandas'
-    if os.path.exists(storedata) and not forceUpdate and not defaults['forceUpdate']:
-        return pd.read_pickle(storedata), pd.read_pickle('all'+storedata)
+    return pd.DataFrame(features).set_index('uid',drop=False) , pd.concat(roomfeatures)
 
-    ff,rf =extract_data_from_sold_property_pages_from_indexes()
-    pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
-    pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
-
-    df= pd.read_pickle('soldprops.pandas').set_index('uid')
-    rdf= pd.read_pickle('soldpropsrooms.pandas')
-
+def process_features_to_final_dataframe(features, roomfeatures):
+    """
+    Take two data frames; massage things to generate a small summary dataset
+    """
+    rdf = roomfeatures
+    df = features
+    
     rdf['area']= rdf.dim.map(lambda ss: area_from_duproprio_dimensions(ss)[2])
 
     rdf['outdoor'] = rdf.room.apply(lambda ss: ss.lower() in ['shed','driveway','terrace','deck','patio','balcony','garage'])
@@ -249,7 +272,7 @@ def prep_data(forceUpdate=False):
     df['indoorArea']= rdf.query('indoor==True').groupby('uid').area.sum()
     df['outdoorArea']= rdf.query('outdoor==True').groupby('uid').area.sum()
     df.outdoorArea.fillna(0, inplace=True)
-    df.listprice = df.listprice.astype(int)
+    df.listprice = df.listprice.astype(float)
 
     from cpblUtilities.mapping import Position
     mylat=45.51892
@@ -269,10 +292,18 @@ def prep_data(forceUpdate=False):
 
     # Bathrooms, etc:
     df['bathrooms'] = df['bathrooms'].fillna(df.bathroom).astype(float)
-    df['bedrooms'] = df['bedrooms'].fillna(df.bedroom).astype(float)
+    if 'bedroom' not in df: df['bedroom'] = np.nan
+    df['bedrooms'] = np.nan if 'bedrooms' not in df else df['bedrooms'].fillna(df.bedroom).astype(float)
+
     df['levels'] = df['levels'].fillna(df.level).astype(float)
-    df['parkingExt'] = df['Number of exterior parking'].fillna(0).astype(int)
-    df['parkingInt'] = df['Number of interior parking'].fillna(0).astype(int)
+    if 'Number of exterior parking' in df:
+        df['parkingExt'] = df['Number of exterior parking'].fillna(0).astype(int)
+    else:
+        df['parkingExt'] = 0
+    if 'Number of interior parking' in df:
+        df['parkingInt'] = df['Number of interior parking'].fillna(0).astype(int)
+    else:
+        df['parkingInt'] = 0
     df['parkings'] = df['parkingExt']+ df['parkingInt'] 
     df['firstfloor'] = df['Located on which floor? (if condo)']=='1'
     df['secondfloor'] = df['Located on which floor? (if condo)']=='2'
@@ -288,10 +319,57 @@ def prep_data(forceUpdate=False):
     dfk['longitude'] = dfk['longitude'].astype(float)
     dfk['ppsqft'] = dfk.listprice/(dfk.livingSpace* 3.28084*3.28084)
     dfk['ppsqft_r'] = dfk.listprice/(dfk.indoorArea* 3.28084*3.28084)
-
-    dfk.to_pickle(storedata)
-    df.to_pickle('all'+storedata)
     return dfk, df
+    
+def get_all_data(forceUpdate=False):
+    storedata = 'tmpsoldd.pandas'
+    if os.path.exists(storedata) and not forceUpdate and not defaults['forceUpdate']:
+        return pd.read_pickle(storedata), pd.read_pickle('all'+storedata)
+
+    #paths['detailshtml'] = 
+    ff2,rf2 = process_folder_of_details_pages('/home/cpbl/Dropbox/househunting/comparables4640/')
+    dfk2,df2 = process_features_to_final_dataframe(ff2, rf2)
+    df2['sold'] = False
+
+    #paths['indexeshtml'] = 
+    ff,rf =extract_data_from_sold_property_pages_from_indexes('sold-manual')
+    dfk,df = process_features_to_final_dataframe(ff, rf)
+    df['sold'] = True
+    
+
+    pd.concat([dfk, dfk2]).to_pickle(storedata)
+    pd.concat([df,df2]).to_pickle('all'+storedata)
+
+    return pd.read_pickle(storedata), pd.read_pickle('all'+storedata)    
+    return dfk, df
+
+    fofofo
+    pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
+    pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
+
+    df= pd.read_pickle('soldprops.pandas').set_index('uid')
+    rdf= pd.read_pickle('soldpropsrooms.pandas')
+
+
+
+    xxxxxxx
+
+def statareg(latex):
+    dfk, df = get_all_data()
+    dfk.reset_index().to_stata(paths['batch']+'allunits.dta')
+    os.system('gzip '+paths['batch']+'allunits.dta')
+    models = latex.str2models("""
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  if undivided
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  if undivided==0
+""")
+    models[0]['code']['after']="""
+predict listpricehat
+predict selistpricehat, stdp
+"""
+    outs= pst.stataLoad(paths['batch']+'allunits')+"""
+    """+ latex.regTable('duproprio',models)
+    return outs
 
 
 #########################################################################################################
@@ -310,9 +388,9 @@ if __name__ == '__main__':
         #if arguments['--serial']:
         #        defaults['server']['parallel']=False
         if arguments['--index-path']:
-                paths['indexhtml']= arguments['--index-path']
+                paths['indexhtml']= arguments['--index-path']+'/'
         if arguments['--details-path']:
-                paths['detailshtml']= arguments['--details-path']
+                paths['detailshtml']= arguments['--details-path']+'/'
         defaults['forceUpdate'] = arguments['--force-update'] == True
         runmode=''.join([ss*arguments[ss] for ss in knownmodes])
         runmode= None if not runmode else runmode
@@ -321,15 +399,19 @@ if __name__ == '__main__':
         print e.message
 
 
-
-    if runmode in ['indexes']: # None: 
+    if runmode in ['details']:
+        features, roomfeatures = process_folder_of_details_pages()
+        foowowo
+        
+    if runmode in ['indexes']: # None:
+        if paths.get('indexhtml',None) is None:
+            paths['indexhtml'] = 'sold-manual'
         dfk,df = prep_data(False)
 
         dfku = dfk[dfk.divided=="Undivided"]
         dfkd = dfk[dfk.divided=="Divided"]
 
 
-        dfk.to_stata(paths['batch']+'allunits.dta')
         # Analysis
 
         # Difference in prices based only on area?
@@ -382,3 +464,10 @@ if __name__ == '__main__':
         foiu
     elif runmode in ['dev']:
         foo
+    elif runmode in ['stata']:
+        sVersion,rVersion,dVersion = 'A','1','d'        
+        pst.runBatchSet(sVersion,rVersion,[
+            statareg,
+            ],dVersion=dVersion)
+        
+                
