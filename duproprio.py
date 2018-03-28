@@ -95,7 +95,8 @@ def use_index_pages_to_get_sold_property_pages(indexpath=None):
             lat = re.findall('"latitude" content="([-.0123456789]*)"', rest)[0]
             lon = re.findall('"longitude" content="([-.0123456789]*)"', rest)[0]
             url =  re.findall("""<a href="(.*?)" class="gtm-search-results-link-property search-results-listings-list__item-image-link" property="significantLink">""",rest)[0]
-            timesold,datesold = re.findall('Sold in : <strong>(.*?) on (.*?)</strong></div>', rest)[0]
+            soldinfo = re.findall('Sold in : <strong>(.*?) on (.*?)</strong></div>', rest)
+            timesold,datesold = '','' if not soldinfo else soldinfo[0]
 
             salefeatures += [dict(latitude= float(lat),
                                   longitude = float(lon),
@@ -133,7 +134,7 @@ def use_index_pages_to_get_sold_property_pages(indexpath=None):
         yield ds,html
 
 
-def extract_data_from_sold_property_pages_from_indexes(indexpath= None, forceUpdate=False):
+def extract_data_from_index_pages(indexpath= None, forceUpdate=False):
     """
     Return list of features and list of rooms from all properties listed in all index pages in a given folder.
     """
@@ -163,7 +164,7 @@ def extract_data_from_sold_property_pages_from_indexes(indexpath= None, forceUpd
 
     sowowo # maybe rewrite this concat to just dataframe a list of series.
     #then save it.
-    ###ff,rf =extract_data_from_sold_property_pages_from_indexes()
+    ###ff,rf =extract_data_from_index_pages()
     pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
     pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
         
@@ -253,7 +254,7 @@ def process_features_to_final_dataframe(features, roomfeatures):
 
     rdf['outdoor'] = rdf.room.apply(lambda ss: ss.lower() in ['shed','driveway','terrace','deck','patio','balcony','garage'])
     rdf['indoor'] = rdf.room.apply(lambda ss: ss.lower() in 
-    ['bathroom', 'bedroom 1 (master)', 'bedroom 2',                        
+    ['bonus room','great room', 'den', 'tv room','apartment living room', 'tv room', 'office front', 'bathroom', 'bedroom 1 (master)', 'bedroom 2',                        
            'dining room', 'kitchen', 'laundry room', 'living room',                        
            'mezzanine', 'bedroom 3', 'utility',                                 
            'dining room / living room', 'bedroom',                     
@@ -266,6 +267,9 @@ def process_features_to_final_dataframe(features, roomfeatures):
            'nook', 'bedroom 4', 'patio', 'meter room', 'apartment 1',                      
            'eat-in kitchen', 'apartment bedroom', 'basement living room',                  
            'wine cellar'],)
+
+    """Basement',  'Great room', 'Basement', , 'Other',  '"""
+
     print('Following are not classified:')
     # 'Basement','Other',                   
     print rdf.query('indoor==False').query('outdoor==False')[['room','area']]
@@ -293,7 +297,7 @@ def process_features_to_final_dataframe(features, roomfeatures):
     # Bathrooms, etc:
     df['bathrooms'] = df['bathrooms'].fillna(df.bathroom).astype(float)
     if 'bedroom' not in df: df['bedroom'] = np.nan
-    df['bedrooms'] = np.nan if 'bedrooms' not in df else df['bedrooms'].fillna(df.bedroom).astype(float)
+    df['bedrooms'] = np.nan if 'bedrooms' not in df else df['bedrooms'].fillna(df.bedroom).astype(int)
 
     df['levels'] = df['levels'].fillna(df.level).astype(float)
     if 'Number of exterior parking' in df:
@@ -308,7 +312,8 @@ def process_features_to_final_dataframe(features, roomfeatures):
     df['firstfloor'] = df['Located on which floor? (if condo)']=='1'
     df['secondfloor'] = df['Located on which floor? (if condo)']=='2'
     df['thirdfloor'] = df['Located on which floor? (if condo)']=='3'
-
+    if 'streetAddress' in df:
+        df['streetAddress']=     df['streetAddress'].str.replace('&#39;',"'")
     
     # Key variables
     dfk = df[['distance', 'indoorArea','outdoorArea', 'divided', 'livingSpace', 'listprice', 'bedrooms','bathrooms','levels', 'parkings','parkingInt', 'parkingExt',
@@ -321,54 +326,111 @@ def process_features_to_final_dataframe(features, roomfeatures):
     dfk['ppsqft_r'] = dfk.listprice/(dfk.indoorArea* 3.28084*3.28084)
     return dfk, df
     
+def add_stata_modeled_to_df(df): # df has index "uid"
+    if os.path.exists(pst.WPdta('allunitsModeled')):
+        dfm=pst.dta2df(pst.WPdta('allunitsModeled')).set_index('uid')
+        dfm = dfm[~dfm.index.duplicated(keep='first')]
+        assert len(dfm.index) == len(dfm.index.unique())
+        assert len(df.index) == len(df.index.unique())
+        foo= df.join( dfm[['selistpricehat', 'listpricehat']])
+        assert len(foo.index)== len(foo.index.unique())
+        assert len(df.join( dfm[['selistpricehat', 'listpricehat']])) == len(df.join( dfm[['selistpricehat', 'listpricehat']]).drop_duplicates())
+        
+    return df.join( dfm[['selistpricehat', 'listpricehat']])
 def get_all_data(forceUpdate=False):
     storedata = 'tmpsoldd.pandas'
+    
     if os.path.exists(storedata) and not forceUpdate and not defaults['forceUpdate']:
-        return pd.read_pickle(storedata), pd.read_pickle('all'+storedata)
+        test = add_stata_modeled_to_df(pd.read_pickle(storedata))
+        assert len(test.index) == len(test.index.unique())
+        return add_stata_modeled_to_df( pd.read_pickle(storedata)), pd.read_pickle('all'+storedata)
 
-    #paths['detailshtml'] = 
+
+    ff3,rf3 = extract_data_from_index_pages('current-manual')
+    dfk3,df3 = process_features_to_final_dataframe(ff3, rf3)
+    df3['sold'] = False
+
     ff2,rf2 = process_folder_of_details_pages('/home/cpbl/Dropbox/househunting/comparables4640/')
     dfk2,df2 = process_features_to_final_dataframe(ff2, rf2)
     df2['sold'] = False
 
     #paths['indexeshtml'] = 
-    ff,rf =extract_data_from_sold_property_pages_from_indexes('sold-manual')
+    ff,rf =extract_data_from_index_pages('sold-manual')
     dfk,df = process_features_to_final_dataframe(ff, rf)
     df['sold'] = True
+
+
+    for adf in [df,df2,df3,  dfk,dfk2, dfk3]:        adf.index.name='uid'
+
+    dfk = pd.concat([dfk, dfk2,dfk3])
+    dfk = dfk[~dfk.index.duplicated(keep='first')]
+    df = pd.concat([df,df2,df3])
+    df = df[~df.index.duplicated(keep='first')]
+
     
+    assert len(dfk.index) == len(dfk.index.unique())
+    assert len(df.index) == len(df.index.unique())
+    
+    dfk.to_pickle(storedata)
+    df.to_pickle('all'+storedata)
+    test = add_stata_modeled_to_df(pd.read_pickle(storedata))
+    assert len(test.index)==len(test.index.unique())
 
-    pd.concat([dfk, dfk2]).to_pickle(storedata)
-    pd.concat([df,df2]).to_pickle('all'+storedata)
+    return add_stata_modeled_to_df(pd.read_pickle(storedata)), pd.read_pickle('all'+storedata)    
 
-    return pd.read_pickle(storedata), pd.read_pickle('all'+storedata)    
-    return dfk, df
-
-    fofofo
-    pd.concat([pd.DataFrame(aff).T for aff in ff]).to_pickle('soldprops.pandas')
-    pd.DataFrame(rf).to_pickle('soldpropsrooms.pandas')
-
-    df= pd.read_pickle('soldprops.pandas').set_index('uid')
-    rdf= pd.read_pickle('soldpropsrooms.pandas')
-
-
-
-    xxxxxxx
 
 def statareg(latex):
     dfk, df = get_all_data()
-    dfk.reset_index().to_stata(paths['batch']+'allunits.dta')
-    os.system('gzip '+paths['batch']+'allunits.dta')
+
+    dfk.reset_index().to_stata(paths['working']+'allunits.dta')
+    os.system('gzip -f {WP}allunits.dta'.format(WP=paths['working']))
     models = latex.str2models("""
+*name:All units
 reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided
+*name:Undivided
+*flag:undivided=yes
 reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  if undivided
+*flag:undivided=no
+*name:Divided
 reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  if undivided==0
 """)
     models[0]['code']['after']="""
+capture drop listpricehat selistpricehat
 predict listpricehat
 predict selistpricehat, stdp
-"""
-    outs= pst.stataLoad(paths['batch']+'allunits')+"""
+"""+pst.stataSave(pst.WPdta('allunitsModeled'))
+    outs= pst.stataLoad(pst.WPdta('allunits'))+"""
     """+ latex.regTable('duproprio',models)
+
+    if 'listpricehat' in dfk:
+        sdf = dfk.join(df[['streetAddress']]).reset_index().dropna(subset=['listpricehat'])[['listprice','listpricehat','selistpricehat','bedrooms','livingSpace', 'uid','streetAddress','distance']].fillna('').sort_values('distance')
+
+        sdf=sdf.query('listprice<950000 and listprice>=400000')
+
+        sdf['bedrooms'] = sdf['bedrooms'].map(lambda ss: int(ss)*2*'~'+str(int(ss))) 
+        for toint in ['listprice','listpricehat','selistpricehat','distance','livingSpace']:
+            sdf[toint]= sdf[toint].astype(int).astype(str)
+            
+        from cpblUtilities.textables import dataframeWithLaTeXToTable
+        dataframeWithLaTeXToTable(sdf.rename(columns={'listpricehat':'Modeled price', 'selistpricehat':'uncertainty','bedrooms':'BR'}), paths['output']+'modeledprices')
+        """
+        df,
+        outfile,
+        tableTitle=None,
+        caption=None,
+        label=None,
+        footer=None,
+        tableName=None,
+        landscape=None,
+        masterLatexFile=None,
+        boldHeaders=False,
+        boldFirstColumn=False,
+        columnWidths=None,
+        formatCodes=None, #'lc',
+        formatString=None,
+        hlines=False,
+        pdfcrop=False)
+        """
     return outs
 
 
@@ -403,10 +465,13 @@ if __name__ == '__main__':
         features, roomfeatures = process_folder_of_details_pages()
         foowowo
         
-    if runmode in ['indexes']: # None:
+    if runmode in ['prep']:
+        dfk,df = get_all_data(False)
+        
+    if runmode in ['plot']: # None:
         if paths.get('indexhtml',None) is None:
             paths['indexhtml'] = 'sold-manual'
-        dfk,df = prep_data(False)
+        dfk,df = get_all_data(False)
 
         dfku = dfk[dfk.divided=="Undivided"]
         dfkd = dfk[dfk.divided=="Divided"]
@@ -441,18 +506,27 @@ if __name__ == '__main__':
         #plt.style.use('seaborn-deep')
         bins = np.linspace(200, 800, 31)
         ax=axs[0]
-        ax.hist([dfku.ppsqft, dfkd.ppsqft], bins, label=['Undivided', 'Divided'])
+        ax.hist([dfku.ppsqft.dropna(), dfkd.ppsqft.dropna()], bins, label=['Undivided', 'Divided'])
         ax.legend(loc='upper right')
         ax.set_xlabel('Price/square-foot (habitable area)')
         ax=axs[1]
-        ax.hist([dfku.ppsqft_r, dfkd.ppsqft_r], bins, label=['Undivided', 'Divided'])
+        ax.hist([dfku.ppsqft_r.dropna(), dfkd.ppsqft_r.dropna()], bins, label=['Undivided', 'Divided'])
         ax.legend(loc='upper right')
         ax.set_xlabel('Price/square-foot (indoor rooms)')
         plt.savefig('ppsqft-div.pdf')
 
+
+        fig,ax = plt.subplots(1)
+        bins = np.linspace(200000, 800000, 31)
+        for br in [2,3,4]:
+            #ax.hist([dfk.query('bedrooms=={}'.format(br)).listprice.values for br in [2,3,4]], bins, label=['2','3','4'])
+            ax.hist(dfk.query('bedrooms=={}'.format(br)).listprice.values , bins, label=str(br), alpha=.3)#['2','3','4'])
+        ax.legend(loc='upper right')
+        ax.set_xlabel('Asking price')
+        plt.savefig('price-br.pdf')
+
+
         plt.show()
-
-
         #dfk.groupby('divided')['ppsqft'].hist(ax=ax)
         #ax.legend()
 
@@ -464,10 +538,11 @@ if __name__ == '__main__':
         foiu
     elif runmode in ['dev']:
         foo
-    elif runmode in ['stata']:
+    elif runmode in ['stata','prep']:
         sVersion,rVersion,dVersion = 'A','1','d'        
         pst.runBatchSet(sVersion,rVersion,[
             statareg,
             ],dVersion=dVersion)
         
+        dfk,df = get_all_data(False)
                 
