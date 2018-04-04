@@ -10,6 +10,7 @@ Usage:
   duproprio prep [options]
   duproprio plot [options]
   duproprio stata [options]
+  duproprio photos [options]
 
 Options:
   -h --help      Show this screen.
@@ -25,6 +26,17 @@ duproprio prep    : Get all data; concatenate it...
 This just uses a manual search of recent solds, or other list, to get locations for sold properties.
 That is, there is no scraping involved.
 However, if you create your own search and download the index files corresponding to your search, this helps to analyse the data from the listed units.
+
+
+Examples:
+
+Download individual property files, from some index pages from a custom search
+ run duproprio.py details --details-path=current-manual
+
+Download a lot of photos:
+ run duproprio.py photos --details-path=current-manual/units
+
+
 
 to do:
  - get latex stata working.
@@ -177,6 +189,12 @@ def extract_data_from_index_pages(indexpath= None, forceUpdate=False):
 
 def extract_data_from_duproprio_detailed_property_html(html):
 
+    costs_ = re.findall(r"""<div class="mortgage-data__table__row__item mortgage-data__table__row__item--name">\s*([^\n]*)\s*</div>\s*<div class="mortgage-data__table__row__item mortgage-data__table__row__item--monthly-costs">\s*([^\n]*)\s*</div>\s*<div class="mortgage-data__table__row__item mortgage-data__table__row__item--yearly-costs">\s*([^\n]*)\s*</div>""", html, re.DOTALL)
+    # For the moment, let's assume everything is available in annual form:
+    costs = [[cc[0].replace(' ',''), float(cc[2].replace('$','').replace(',',''))] for cc in costs_]
+    if costs: # Don't add sum where there are none found
+        costs+= [['totalAnnualCosts', sum([cc[1] for cc in costs])]]
+
     roomdirs = re.findall("""listing-rooms-details__table__item--room">\n *([^\n]*).*?listing-rooms-details__table__item--dimensions__content"> *\n *([^\n]*)""",html, re.DOTALL)
 
     lchars = re.findall("""listing-list-characteristics__row listing-list-characteristics__row--label">(.*?)</div>.*?listing-list-characteristics__row listing-list-characteristics__row--value">(.*?)</div>""", html, re.DOTALL)
@@ -197,7 +215,7 @@ def extract_data_from_duproprio_detailed_property_html(html):
     listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""", html, re.DOTALL)
     listprice = np.nan if not listprice else float(listprice[0].replace(',',''))
 
-    features1 =  pd.Series(dict(lchars+mainchars+[['listprice',listprice]]) ) 
+    features1 =  pd.Series(dict(lchars+mainchars+costs+[['listprice',listprice]]) ) 
 
     roomfeatures1=[]
     for rd in roomdirs:
@@ -221,13 +239,44 @@ def area_from_duproprio_dimensions(aline):
         return float(re.findall('([0123456789.]*) m²', aline)[0])  # metres squared
     raise(Error('Cannot recognize dimensions format'))
 
+def get_photos_for_folder_of_details_pages(detailspath=None):
+    if detailspath is None:
+        detailspath = paths['detailshtml']
+    features, roomfeatures =[],[]
+    for filen in glob.glob(detailspath+'/'+"*.html"):
+        html = open(filen,'rt').read()
+        imagepath = filen.replace('.html','_photos/')
+        os.system('mkdir -p '+ imagepath)
+        for photo in re.findall("""{"is_primary"(.*?)}""",html):
+            typedesc = re.findall('"type":"(.*?)","description":"(.*?)"', photo)
+            formats = re.findall('[{,]"(.*?)":"(.*?.jpg)', photo.split('formats":')[1])
+            if formats[-1][1] in ['\\/build\\/img\\/jpg']:
+                continue
+            if '/' in formats[-1][1]:
+                photofile = formats[-1][1].split('/')[-1]
+                url = 'https://photos.duproprio.com/'+ formats[-1][1].replace(r'\/','/')
+            else:
+                photofile=formats[-1][1]
+                url = 'https://photos.duproprio.com/'+ photofile
+            if  os.path.exists(imagepath+photofile):
+                pass#print(imagepath+' Already have '+url)
+            else:
+                try:
+                    response = urllib2.urlopen(url)
+                    jpg = response.read()
+                    with open(imagepath+photofile,'wb') as fout:
+                        fout.write(jpg)
+                    print(photofile)
+                except urllib2.HTTPError as e:
+                    print(imagepath+' FAILED to get '+url)
+
 
 def process_folder_of_details_pages(detailspath=None):
     if detailspath is None:
         detailspath = paths['detailshtml']
     features, roomfeatures =[],[]
-    for file in glob.glob(detailspath+'/'+"*.html"):
-        html = open(file,'rt').read()
+    for filen in glob.glob(detailspath+'/'+"*.html"):
+        html = open(filen,'rt').read()
         url = re.findall("""<meta property="og:url" content="(.*?)">""",html)[0]
         uid = url.split('-')[-1]
         settargeting_etc = re.findall(""".setTargeting.'(.*?)','(.*?)'""", html) +    re.findall("""<meta property="(.*?)" content="(.*?)".""", html) 
@@ -314,12 +363,12 @@ def process_features_to_final_dataframe(features, roomfeatures):
     df['thirdfloor'] = df['Located on which floor? (if condo)']=='3'
     if 'streetAddress' in df:
         df['streetAddress']=     df['streetAddress'].str.replace('&#39;',"'")
-    
+
     # Key variables
     dfk = df[['distance', 'indoorArea','outdoorArea', 'divided', 'livingSpace', 'listprice', 'bedrooms','bathrooms','levels', 'parkings','parkingInt', 'parkingExt',
               'firstfloor','secondfloor', 'thirdfloor',
-              'undivided', 'latitude', 'longitude',
-    ]].sort_values('distance')
+              'undivided', 'latitude', 'longitude', ]+('totalAnnualCosts' in df)*[
+              'Propertytaxes', 'Schooltaxes', 'Electricity', 'Condofees', 'totalAnnualCosts', ]].sort_values('distance')
     dfk['latitude'] = dfk['latitude'].astype(float)
     dfk['longitude'] = dfk['longitude'].astype(float)
     dfk['ppsqft'] = dfk.listprice/(dfk.livingSpace* 3.28084*3.28084)
@@ -348,16 +397,16 @@ def get_all_data(forceUpdate=False):
 
     ff3,rf3 = extract_data_from_index_pages('current-manual')
     dfk3,df3 = process_features_to_final_dataframe(ff3, rf3)
-    df3['sold'] = False
+    dfk3['sold'] = False
 
     ff2,rf2 = process_folder_of_details_pages('/home/cpbl/Dropbox/househunting/comparables4640/')
     dfk2,df2 = process_features_to_final_dataframe(ff2, rf2)
-    df2['sold'] = False
+    dfk2['sold'] = False
 
     #paths['indexeshtml'] = 
     ff,rf =extract_data_from_index_pages('sold-manual')
     dfk,df = process_features_to_final_dataframe(ff, rf)
-    df['sold'] = True
+    dfk['sold'] = True
 
 
     for adf in [df,df2,df3,  dfk,dfk2, dfk3]:        adf.index.name='uid'
@@ -386,10 +435,14 @@ def statareg(latex):
     os.system('gzip -f {WP}allunits.dta'.format(WP=paths['working']))
     models = latex.str2models("""
 *name:All units
-reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided
+reg listprice livingSpace  bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided 
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided 
+*name:All units
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided  if sold==0
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  undivided totalAnnualCosts if sold==0
 *name:Undivided
 *flag:undivided=yes
-reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  if undivided
+reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor if undivided 
 *flag:undivided=no
 *name:Divided
 reg listprice livingSpace indoorArea outdoorArea bedrooms bathrooms levels parkings firstfloor secondfloor thirdfloor  if undivided==0
@@ -400,7 +453,20 @@ predict listpricehat
 predict selistpricehat, stdp
 """+pst.stataSave(pst.WPdta('allunitsModeled'))
     outs= pst.stataLoad(pst.WPdta('allunits'))+"""
-    """+ latex.regTable('duproprio',models)
+    """+ latex.regTable('duproprio',models, variableOrder=[
+        'undivided'
+'bedrooms', 
+'bathrooms', 
+'livingSpace', 
+'indoorArea', 
+'outdoorArea', 
+'parkings', 
+'firstfloor', 
+'secondfloor', 
+'thirdfloor', 
+'levels', 
+    ])
+
 
     if 'listpricehat' in dfk:
         sdf = dfk.join(df[['streetAddress']]).reset_index().dropna(subset=['listpricehat'])[['listprice','listpricehat','selistpricehat','bedrooms','livingSpace', 'uid','streetAddress','distance']].fillna('').sort_values('distance')
@@ -480,13 +546,22 @@ if __name__ == '__main__':
         # Analysis
 
         # Difference in prices based only on area?
-        fig,ax = plt.subplots(1)
+        fig,axs = plt.subplots(2)
+        ax=axs[0]
         for dd in ['Divided','Undivided']:
             yy = dfk.query('divided=="{}"'.format(dd))
-            plt.plot(yy.listprice/1000, yy.indoorArea, '.', label=dd)
+            ax.plot(yy.listprice/1000, yy.indoorArea, '.', label=dd)
         ax.set_xlabel(r'Asking price (k\$)')
         ax.set_ylabel('Indoor area (m$^2$, sum over rooms)')
-        plt.legend()
+        ax.set_ylim([0,250])
+        ax=axs[1]
+        for dd in ['Divided','Undivided']:
+            yy = dfk.query('divided=="{}"'.format(dd))
+            ax.plot(yy.listprice/1000, yy.livingSpace, '.', label=dd)
+        ax.set_xlabel(r'Asking price (k\$)')
+        ax.set_ylabel('Living space (m$^2$)')
+        ax.legend()
+        ax.set_ylim([0,250])
         plt.savefig('price-div.pdf')
 
         # sum of area matchs living space?
@@ -538,6 +613,8 @@ if __name__ == '__main__':
         foiu
     elif runmode in ['dev']:
         foo
+    elif runmode in ['photos']:
+        get_photos_for_folder_of_details_pages()
     elif runmode in ['stata','prep']:
         sVersion,rVersion,dVersion = 'A','1','d'        
         pst.runBatchSet(sVersion,rVersion,[
