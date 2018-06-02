@@ -11,6 +11,7 @@ Usage:
   duproprio plot [options]
   duproprio stata [options]
   duproprio photos [options]
+  duproprio convert_areas [options]
 
 Options:
   -h --help      Show this screen.
@@ -22,6 +23,8 @@ duproprio indexes : Start from index files in a given folder
 duproprio details :  Start from details files in a given folder
 duproprio assess  : Assess (estimate) value of a given URL or duproprio ID.
 duproprio prep    : Get all data; concatenate it...
+
+duproprio convert_areas: A completely unrelated mode; this accepts pasted room areas from a Duproprio page, and adds up the area to find the total
 
 This just uses a manual search of recent solds, or other list, to get locations for sold properties.
 That is, there is no scraping involved.
@@ -161,7 +164,12 @@ def extract_data_from_index_pages(indexpath= None, forceUpdate=False):
     roomfeatures=[]
     for prec,html in use_index_pages_to_get_sold_property_pages(indexpath):
         feat, rfeat = extract_data_from_duproprio_detailed_property_html(html)
-        
+        #prec = prec.drop_duplicates() # WHAT! Why is this necessary for some weird cases
+        if isinstance(prec, pd.DataFrame):
+            print('wlwlejrlwklew WHAT HAS HAPPEND?? prec has multiple values for ')
+            print(prec)
+            continue
+        print(len(prec))
         rf = pd.DataFrame(rfeat)
         rf['uid']= prec['uid']
         roomfeatures+=[rf]
@@ -211,8 +219,9 @@ def extract_data_from_duproprio_detailed_property_html(html):
     latlon = re.findall("""{"latitude":(.*?),"longitude":(.*?),""", html)
     if latlon:
         mainchars+= [['latitude',float(latlon[0][0])], ['longitude',float(latlon[0][1])]]
-
-    listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""", html, re.DOTALL)
+    check_for_listprice = re.findall("""<div class="listing-price">.*?</div>""", html, re.DOTALL)
+    listprice = re.findall("""<div class="listing-price">.*?\$([^\n]*)""",
+                           check_for_listprice[0], re.DOTALL)
     listprice = np.nan if not listprice else float(listprice[0].replace(',',''))
 
     features1 =  pd.Series(dict(lchars+mainchars+costs+[['listprice',listprice]]) ) 
@@ -529,7 +538,13 @@ if __name__ == '__main__':
 
     if runmode in ['details']:
         features, roomfeatures = process_folder_of_details_pages()
-        foowowo
+
+    if runmode in ['indexes']:
+        extract_data_from_index_pages(paths['indexhtml'])
+        
+        ####use_index_pages_to_get_sold_property_pages(paths['indexhtml'])
+
+        foowowo2
         
     if runmode in ['prep']:
         dfk,df = get_all_data(False)
@@ -613,6 +628,29 @@ if __name__ == '__main__':
         foiu
     elif runmode in ['dev']:
         foo
+    elif runmode in ['convert_areas']:
+        import sys,re
+        while (1):
+            print(' Copy and paste the "Room dimensions" section from a Duproprio page. Then type Ctrl-D to get the sum.')
+            complete_inout = sys.stdin.read()
+
+            print('\n\n\n\n\n\n')
+            buffer =''
+            rooms=[]
+            for aline in complete_inout.split('\n'):
+                if 'm)' not in aline:
+                    buffer= aline
+                    continue
+                mm= re.findall('([,.0123456789]*) m x ([,.0123456789]*) m' , aline)
+                x,y =  float(mm[0][0].replace(',','.')) ,  float( mm[0][1].replace(',','.'))
+                print '{}\t{}\t{}\t\t{}'.format(buffer, x,y,x*y)
+                buffer=''
+                rooms+= [x*y]
+
+
+                print '\nTOTAL\t\t\t\t{}'.format(sum(rooms))
+
+
     elif runmode in ['photos']:
         get_photos_for_folder_of_details_pages()
     elif runmode in ['stata','prep']:
